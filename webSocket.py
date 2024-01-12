@@ -137,7 +137,7 @@ def getTokenInfo (exch_seg, instrumenttype,symbol,strike_price,pe_ce):
 
 if __name__ == '__main__':
     obj=SmartConnect(api_key=config.API_KEY)
-    data = obj.generateSession(config.USER_NAME,config.PWD, pyotp.TOTP(config.TOKEN).now())
+    data = obj.generateSession(config.USER_NAME,config.PIN, pyotp.TOTP(config.TOKEN).now())
     config.SMART_API_OBJ = obj
     AUTH_TOKEN = data['data']['jwtToken']
     refreshToken = data['data']['refreshToken']
