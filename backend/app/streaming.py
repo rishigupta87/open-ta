@@ -221,11 +221,6 @@ def stop_streaming_endpoint(category: str):
     del active_streams[category]
     return {"status": f"Streaming stopped for {category}", "streaming": False}
 
-# FastAPI endpoint to check streaming status
-@app.get("/streaming-status/")
-def streaming_status():
-    return {"active_streams": list(active_streams.keys())}
-
 # Endpoint to fetch all Redis data (as in previous examples)
 @app.get("/redis-data/")
 def get_all_redis_data():
