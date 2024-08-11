@@ -8,11 +8,11 @@ WORKDIR /app
 COPY . .
 
 # Install any needed packages specified in requirements.txt
-RUN pip install streamlit requests
+RUN pip install streamlit requests redis
 
 # Make port 8501 available to the world outside this container
 EXPOSE 8501
 
 # Run Streamlit app
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.headless=true"]
 

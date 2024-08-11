@@ -1,15 +1,22 @@
 import streamlit as st
-import requests
+import redis
+import json
 
-st.title("Stock Market Streaming App")
+# Initialize Redis client
+redis_client = redis.StrictRedis(host='redis', port=6379, db=0)
 
-start_streaming_url = "http://backend:8000/start-streaming/"
-stop_streaming_url = "http://backend:8000/stop-streaming/"
+# Subscribe to the Redis channel
+pubsub = redis_client.pubsub()
+pubsub.subscribe('streaming-data-channel')
 
-if st.button('Start Streaming'):
-    response = requests.get(start_streaming_url)
-    st.write(response.json())
+st.title("Real-Time Stock Market Prices")
 
-if st.button('Stop Streaming'):
-    response = requests.get(stop_streaming_url)
-    st.write(response.json())
+# Use a placeholder to dynamically update the data
+placeholder = st.empty()
+
+# Continuously listen for new messages on the Redis channel
+for message in pubsub.listen():
+    if message["type"] == "message":
+        data = json.loads(message["data"].decode("utf-8"))
+        with placeholder.container():
+            st.write(data)

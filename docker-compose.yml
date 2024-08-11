@@ -5,6 +5,7 @@ services:
     build: ./backend
     volumes:
       - ./backend:/app
+      - ./backend/app/tokens:/app/tokens
     ports:
       - "8000:8000"
       - "5678:5678"
@@ -25,6 +26,9 @@ services:
       - "8501:8501"
     depends_on:
       - backend
+    volumes:
+      - ./frontend:/app  # Mount the current directory to /app in the container
+      - ./backend/app/tokens:/app/tokens
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379

@@ -1,13 +1,15 @@
 import threading
 import time
 import pyotp
+import redis
+import json
+import pandas as pd
+from datetime import datetime, timezone, timedelta
+from fastapi import FastAPI, HTTPException
+
 from app.config.config import *
 from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
-import redis
-import json
-from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, HTTPException
 
 # Enable debugger
 import ptvsd
@@ -17,16 +19,33 @@ print("Debugger is ready to attach. Please connect the debugger.")
 # Initialize Redis client
 redis_client = redis.StrictRedis(host='redis', port=6379, db=0)
 
-# # Global variables
-# streaming_thread = None
-# stop_event = threading.Event()
-# sws = None  # Global WebSocket instance
+# Dictionary to hold the active streaming threads
+active_streams = {}
 
 def convert_to_ist(utc_timestamp):
     utc_dt = datetime.fromtimestamp(utc_timestamp, tz=timezone.utc)
     ist_offset = timedelta(hours=5, minutes=30)
     ist_dt = utc_dt + ist_offset
     return ist_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+def load_futures_tokens(file_path, exchange_type):
+    """Load FUTURES tokens from a CSV file and map them to their corresponding name and expiry."""
+    try:
+        df = pd.read_csv(file_path)
+        df['token'] = df['token'].astype(str)  # Ensure tokens are strings
+        futures_tokens = df[(df['instrumenttype'].str.startswith('FUT')) & (df['exch_seg'] == exchange_type)]
+
+        print(f"Tokens loaded from {file_path}: {futures_tokens['token'].tolist()}")
+
+        # Create a dictionary mapping each token to its name and expiry
+        token_map = {row['token']: {'name': row['name'], 'expiry': row['expiry']} for _, row in futures_tokens.iterrows()}
+        print(f"Token map: {token_map}")
+        token_list = futures_tokens['token'].tolist()
+
+        return token_list, token_map
+    except Exception as e:
+        print(f"Error loading futures tokens from {file_path}: {e}")
+        return [], {}
 
 class WebSocketStreamer:
     def __init__(self, api_key, username, pin, token):
@@ -37,7 +56,8 @@ class WebSocketStreamer:
         self.sws = None
         self.auth_token = None
         self.feed_token = None
-        self.stop_event = threading.Event()
+        self.active_categories = {}  # To keep track of active categories and their tokens
+        self.token_maps = {}  # To store token maps for each category
 
     def login(self):
         obj = SmartConnect(api_key=self.api_key)
@@ -47,15 +67,29 @@ class WebSocketStreamer:
 
     def on_open(self, wsapp):
         print("WebSocket connection opened")
-        correlation_id = "dft_test1"
-        mode = 3
-        token_list = [{"exchangeType": 5, "tokens": ["430106", "428869", "430268", "429029"]},
-                      {"exchangeType": 2, "tokens": ["56547", "37733"]}]
-        self.sws.subscribe(correlation_id, mode, token_list)
+        for category, token_list in self.active_categories.items():
+            correlation_id = f"{category}_id"
+            mode = 3
+            self.sws.subscribe(correlation_id, mode, token_list)
 
     def on_data(self, wsapp, message):
-        print("Ticks: {}".format(message))
         try:
+            token = str(message['token'])
+            name_expiry = None
+
+            # Search for the token in the token_maps
+            for token_map in self.token_maps.values():
+                if token in token_map:
+                    name_expiry = token_map[token]
+                    break
+
+            if not name_expiry:
+                print(f"Token {token} not found in any category.")
+                return
+
+            name = name_expiry['name']
+            expiry = name_expiry['expiry']
+
             data_to_store = {
                 "exchange_timestamp": convert_to_ist(message["exchange_timestamp"] / 1000),
                 "last_traded_price": message["last_traded_price"] / 100,
@@ -72,7 +106,22 @@ class WebSocketStreamer:
                 "open_interest": message["open_interest"],
                 "open_interest_change_percentage": message["open_interest_change_percentage"]
             }
-            redis_client.rpush(f"websocket-data:{message['token']}", json.dumps(data_to_store))
+
+            redis_key = f"websocket-data:{name}:{token}:{expiry}"
+
+            # Check if the same data is already stored
+            existing_data = redis_client.lrange(redis_key, 0, -1)
+            for item in existing_data:
+                item_data = json.loads(item.decode("utf-8"))
+                if (item_data["exchange_timestamp"] == data_to_store["exchange_timestamp"] and 
+                    item_data["last_traded_timestamp"] == data_to_store["last_traded_timestamp"]):
+                    print(f"Duplicate data found for {redis_key} with exchange_timestamp {data_to_store['exchange_timestamp']}. Skipping storage.")
+                    return
+
+            # If no duplicate, store the new data
+            redis_client.rpush(redis_key, json.dumps(data_to_store))
+            redis_client.publish('streaming-data-channel', json.dumps(data_to_store))
+            
         except Exception as e:
             print(f"Error storing data in Redis: {e}")
 
@@ -82,45 +131,67 @@ class WebSocketStreamer:
     def on_close(self, wsapp):
         print("WebSocket connection closed")
 
-    def start_streaming(self):
+    def start_streaming(self, category):
         try:
+            if category in self.active_categories:
+                print(f"Streaming already running for {category}")
+                return
+            
             if not self.auth_token:
                 self.login()
 
-            self.sws = SmartWebSocketV2(self.auth_token, self.api_key, self.username, self.feed_token)
+            if category == "Index":
+                tokens, token_map = load_futures_tokens('/app/tokens/index_instruments.csv', "NFO")
+                exchange_type = 2  # NSE
+            elif category == "Stocks":
+                tokens, token_map = load_futures_tokens('/app/tokens/stocks_instruments.csv', "NFO")
+                exchange_type = 2  # NSE
+            elif category == "Commodities":
+                tokens, token_map = load_futures_tokens('/app/tokens/commodities_instruments.csv', "MCX")
+                exchange_type = 5  # MCX
+            else:
+                raise HTTPException(status_code=400, detail="Invalid category")
 
-            # Assign event handlers
-            self.sws.on_open = self.on_open
-            self.sws.on_data = self.on_data
-            self.sws.on_error = self.on_error
-            self.sws.on_close = self.on_close
+            if not tokens:
+                raise HTTPException(status_code=404, detail="No FUTURES tokens found")
 
-            # Connect to WebSocket
-            self.sws.connect()
+            # Prepare the token list
+            token_list = [{"exchangeType": exchange_type, "tokens": tokens}]
+            self.active_categories[category] = token_list
+            self.token_maps[category] = token_map  # Store the token_map in the class
 
-            # Keep the connection alive
-            while not self.stop_event.is_set():
-                time.sleep(1)
+            # Start WebSocket connection if it's not already open
+            if not self.sws:
+                self.sws = SmartWebSocketV2(self.auth_token, self.api_key, self.username, self.feed_token)
+                self.sws.on_open = self.on_open
+                self.sws.on_data = self.on_data
+                self.sws.on_error = self.on_error
+                self.sws.on_close = self.on_close
+                threading.Thread(target=self.sws.connect).start()  # Start WebSocket connection in a separate thread
+                print(f"Started WebSocket connection for {category}")
+            else:
+                self.sws.subscribe(f"{category}_id", 3, token_list)
+        
         except Exception as e:
-            print(f"Error during streaming: {e}")
-        finally:
-            if self.sws:
-                self.sws.close_connection()
-                self.sws = None
+            print(f"Error during streaming for {category}: {e}")
 
-    def stop_streaming(self):
+    def stop_streaming(self, category):
         try:
-            if self.sws:
-                correlation_id = "dft_test1"
+            if category in self.active_categories:
+                correlation_id = f"{category}_id"
                 mode = 3
-                token_list = [{"exchangeType": 5, "tokens": ["430106", "428869", "430268", "429029"]},
-                              {"exchangeType": 2, "tokens": ["56547", "37733"]}]
+                token_list = self.active_categories.pop(category)
                 self.sws.unsubscribe(correlation_id, mode, token_list)
-                self.sws.close_connection()
-                self.sws = None
-            self.stop_event.set()
+                print(f"Stopped streaming for {category}")
+
+            if not self.active_categories:
+                if self.sws:
+                    self.sws.close_connection()
+                    self.sws = None
+                    print("No active streams, WebSocket connection closed.")
+
         except Exception as e:
-            print(f"Error stopping the WebSocket: {e}")
+            print(f"Error stopping the WebSocket for {category}: {e}")
 
 # FastAPI app instance
 app = FastAPI()
@@ -130,27 +201,84 @@ streamer = WebSocketStreamer(API_KEY, USER_NAME, PIN, TOKEN)
 
 # FastAPI endpoint to start streaming
 @app.get("/start-streaming/")
-def start_streaming_endpoint():
-    if streamer.stop_event.is_set():
-        raise HTTPException(status_code=400, detail="Streaming already running")
+def start_streaming_endpoint(category: str):
+    if category in active_streams:
+        raise HTTPException(status_code=400, detail=f"Streaming already running for {category}")
     
-    threading.Thread(target=streamer.start_streaming).start()
-    return {"status": "Streaming started", "streaming": True}
+    stream_thread = threading.Thread(target=streamer.start_streaming, args=(category,))
+    stream_thread.start()
+    active_streams[category] = stream_thread
+    return {"status": f"Streaming started for {category}", "streaming": True}
 
 # FastAPI endpoint to stop streaming
 @app.get("/stop-streaming/")
-def stop_streaming_endpoint():
-    if not streamer.stop_event.is_set():
-        streamer.stop_streaming()
-        return {"status": "Streaming stopped", "streaming": False}
+def stop_streaming_endpoint(category: str):
+    if category not in active_streams:
+        raise HTTPException(status_code=400, detail=f"Streaming not running for {category}")
     
-    raise HTTPException(status_code=400, detail="Streaming was not running")
+    streamer.stop_streaming(category)
+    active_streams[category].join()
+    del active_streams[category]
+    return {"status": f"Streaming stopped for {category}", "streaming": False}
 
 # FastAPI endpoint to check streaming status
 @app.get("/streaming-status/")
 def streaming_status():
-    return {"streaming": not streamer.stop_event.is_set()}
+    return {"active_streams": list(active_streams.keys())}
+
+# Endpoint to fetch all Redis data (as in previous examples)
+@app.get("/redis-data/")
+def get_all_redis_data():
+    """
+    Fetch and return all data from Redis for all tokens.
+    """
+    try:
+        keys = redis_client.keys("websocket-data:*")
+        all_data = {}
+        
+        for key in keys:
+            key_parts = key.decode("utf-8").split(":")
+            name = key_parts[1]
+            token = key_parts[2]
+            expiry = key_parts[3]
+            
+            data = redis_client.lrange(key, 0, -1)
+            parsed_data = [json.loads(item.decode("utf-8")) for item in data]
+
+            # Use a combination of name, token, and expiry as a composite key
+            composite_key = f"{name}-{token}-{expiry}"
+            all_data[composite_key] = parsed_data
+
+        if not all_data:
+            return {"message": "No data available in Redis"}
+
+        return {"data": all_data}
+    except Exception as e:
+        print(f"Error fetching data from Redis: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+# Endpoint to delete all Redis data
+@app.delete("/redis-flush/")
+def delete_all_redis_data():
+    try:
+        redis_client.flushdb()
+        return {"status": "Data deleted successfully."}
+    except Exception as e:
+        print(f"Error deleting data from Redis: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    
+@app.get("/running-streams/")
+def get_running_streams():
+    """
+    Endpoint to return all currently running streams.
+    """
+    running_streams = list(streamer.active_categories.keys())
+    
+    if not running_streams:
+        return {"message": "No streams are currently running."}
+
+    return {"running_streams": running_streams}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0")
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
