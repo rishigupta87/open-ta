@@ -5,7 +5,7 @@ import redis
 import json
 import pandas as pd
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, HTTPException
 
 from app.config.config import *
 from SmartApi import SmartConnect
@@ -21,6 +21,9 @@ redis_client = redis.StrictRedis(host='redis', port=6379, db=0)
 
 # Dictionary to hold the active streaming threads
 active_streams = {}
+
+# Create a FastAPI router
+router = APIRouter()
 
 def convert_to_ist(utc_timestamp):
     utc_dt = datetime.fromtimestamp(utc_timestamp, tz=timezone.utc)
@@ -73,6 +76,7 @@ class WebSocketStreamer:
             self.sws.subscribe(correlation_id, mode, token_list)
 
     def on_data(self, wsapp, message):
+        print(f"Ticks:{message}")
         try:
             token = str(message['token'])
             name_expiry = None
@@ -109,16 +113,7 @@ class WebSocketStreamer:
 
             redis_key = f"websocket-data:{name}:{token}:{expiry}"
 
-            # Check if the same data is already stored
-            existing_data = redis_client.lrange(redis_key, 0, -1)
-            for item in existing_data:
-                item_data = json.loads(item.decode("utf-8"))
-                if (item_data["exchange_timestamp"] == data_to_store["exchange_timestamp"] and 
-                    item_data["last_traded_timestamp"] == data_to_store["last_traded_timestamp"]):
-                    print(f"Duplicate data found for {redis_key} with exchange_timestamp {data_to_store['exchange_timestamp']}. Skipping storage.")
-                    return
-
-            # If no duplicate, store the new data
+            # Store the new data
             redis_client.rpush(redis_key, json.dumps(data_to_store))
             redis_client.publish('streaming-data-channel', json.dumps(data_to_store))
             
@@ -193,15 +188,12 @@ class WebSocketStreamer:
         except Exception as e:
             print(f"Error stopping the WebSocket for {category}: {e}")
 
-# FastAPI app instance
-app = FastAPI()
-
 # WebSocketStreamer instance
 streamer = WebSocketStreamer(API_KEY, USER_NAME, PIN, TOKEN)
 
-# FastAPI endpoint to start streaming
-@app.get("/start-streaming/")
-def start_streaming_endpoint(category: str):
+# FastAPI endpoints
+@router.get("/start-streaming/")
+async def start_streaming_endpoint(category: str):
     if category in active_streams:
         raise HTTPException(status_code=400, detail=f"Streaming already running for {category}")
     
@@ -210,9 +202,8 @@ def start_streaming_endpoint(category: str):
     active_streams[category] = stream_thread
     return {"status": f"Streaming started for {category}", "streaming": True}
 
-# FastAPI endpoint to stop streaming
-@app.get("/stop-streaming/")
-def stop_streaming_endpoint(category: str):
+@router.get("/stop-streaming/")
+async def stop_streaming_endpoint(category: str):
     if category not in active_streams:
         raise HTTPException(status_code=400, detail=f"Streaming not running for {category}")
     
@@ -221,9 +212,8 @@ def stop_streaming_endpoint(category: str):
     del active_streams[category]
     return {"status": f"Streaming stopped for {category}", "streaming": False}
 
-# Endpoint to fetch all Redis data (as in previous examples)
-@app.get("/redis-data/")
-def get_all_redis_data():
+@router.get("/redis-data/")
+async def get_all_redis_data():
     """
     Fetch and return all data from Redis for all tokens.
     """
@@ -252,9 +242,8 @@ def get_all_redis_data():
         print(f"Error fetching data from Redis: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-# Endpoint to delete all Redis data
-@app.delete("/redis-flush/")
-def delete_all_redis_data():
+@router.delete("/redis-flush/")
+async def delete_all_redis_data():
     try:
         redis_client.flushdb()
         return {"status": "Data deleted successfully."}
@@ -262,8 +251,8 @@ def delete_all_redis_data():
         print(f"Error deleting data from Redis: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
     
-@app.get("/running-streams/")
-def get_running_streams():
+@router.get("/running-streams/")
+async def get_running_streams():
     """
     Endpoint to return all currently running streams.
     """
@@ -273,7 +262,3 @@ def get_running_streams():
         return {"message": "No streams are currently running."}
 
     return {"running_streams": running_streams}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
