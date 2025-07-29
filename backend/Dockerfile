@@ -1,22 +1,55 @@
-FROM python:3.9-slim
+FROM python:3.12-slim as base
 
-# Install Poetry
-RUN pip install poetry
-
-# Set the working directory
 WORKDIR /app
 
-# Copy the pyproject.toml and poetry.lock files
-COPY pyproject.toml poetry.lock* /app/
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies
-RUN poetry install
+# Install Poetry
+RUN curl -sSL https://install.python-poetry.org | python3 -
+ENV PATH="/root/.local/bin:$PATH"
 
-# Copy the rest of the application files
+# Copy dependency files
+COPY pyproject.toml poetry.lock* ./
+
+# Configure poetry
+RUN poetry config virtualenvs.create false
+
+# Install dependencies with --no-root flag to avoid installing the current project
+RUN poetry lock && poetry install --no-root
+
+# Install debugpy for remote debugging
+RUN pip install debugpy scipy
+
+# Development stage with hot reloading
+FROM base as development
+
+# Set environment variables for development
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+# Copy the rest of the application
 COPY . .
 
-# Expose the port FastAPI will run on and the debugging port
-EXPOSE 8000 5678
+# Make start_debug.py executable
+RUN chmod +x start_debug.py
 
-# Command to run the FastAPI server
-CMD ["poetry", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Command to run the application (supports both normal and debug mode)
+CMD ["python", "start_debug.py"]
+
+# Production stage
+FROM base as production
+
+# Copy the rest of the application
+COPY . .
+
+# Make start_debug.py executable
+RUN chmod +x start_debug.py
+
+# Command to run the application
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,34 +1,94 @@
-version: '3.8'
+version: "3.8"
 
 services:
+  kafka:
+    image: bitnami/kafka:latest
+    networks:
+      - my_network
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_ENABLE_KRAFT: "yes"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_BROKER_ID: 1
+      KAFKA_CFG_NODE_ID: 1
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+
+  kafka-consumer:
+    build: ./backend
+    command: python kafka_consumer.py
+    depends_on:
+      - kafka
+      - redis
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./backend:/app
+      - ./websocket-bridge:/bridge 
+    networks:
+      - my_network
+
+  websocket-bridge:
+    build: ./websocket-bridge
+    volumes:
+      - ./websocket-bridge:/app
+    depends_on:
+      - kafka
+    environment:
+      API_KEY: 'tp1uMyPI'
+      USERNAME: 'R50204921'
+      PASSWORD: '2802'
+      TOTP_SECRET: 'B6RIX56TGXOQINBJ6SAY2JLMCA'
+    networks:
+      - my_network
+
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    networks:
+      - my_network
+
   backend:
     build: ./backend
     volumes:
-      - ./backend:/app
-      - ./backend/app/tokens:/app/tokens
+      - ./backend:/app            # ✅ backend code
+      - ./websocket-bridge:/bridge  # ✅ separate path for bridge
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - kafka
+      - redis
+    networks:
+      - my_network
     ports:
       - "8000:8000"
       - "5678:5678"
-    depends_on:
-      - redis
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-
-  redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
+    command: sh -c "python -m debugpy --listen 0.0.0.0:5678 -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
 
   frontend:
     build: ./frontend
+    volumes:
+      - ./frontend:/app
+    depends_on:
+      - redis
     ports:
       - "8501:8501"
-    depends_on:
-      - backend
-    volumes:
-      - ./frontend:/app  # Mount the current directory to /app in the container
-      - ./backend/app/tokens:/app/tokens
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+    networks:
+      - my_network
+    command: streamlit run app.py --server.port=8501
+
+networks:
+  my_network:
+    driver: bridge

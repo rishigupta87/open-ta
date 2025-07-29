@@ -1,0 +1,4 @@
+"subscription_mode","exchange_type","token","sequence_number","exchange_timestamp","last_traded_price","subscription_mode_val","last_traded_quantity","average_traded_price","volume_trade_for_the_day","total_buy_quantity","total_sell_quantity","open_price_of_the_day","high_price_of_the_day","low_price_of_the_day","closed_price","last_traded_timestamp","open_interest","open_interest_change_percentage","upper_circuit_limit","lower_circuit_limit","52_week_high_price","52_week_low_price"
+3,5,"447552",20853564,1752665343000,5671,"SNAP_QUOTE",2,571090,6216,689,712,573000,575000,566700,571300,1752665339,769400,4578646937162614000,594100,548500,658500,473300
+3,5,"455904",20853514,1752665343000,49.6,"SNAP_QUOTE",3,6660,144092,4599,5595,8630,9510,4720,7650,1752665341,2790900,4579416811206653400,78410,10,98000,4720
+3,5,"455954",20853534,1752665343000,75.1,"SNAP_QUOTE",4,6210,166415,4373,4245,5030,7880,4290,6200,1752665343,1917500,4594436763783150600,75810,10,34800,3070

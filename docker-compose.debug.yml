@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  backend:
+    environment:
+      # Override debug settings for development
+      - DEBUG_ENABLED=true
+      - DEBUG_PORT=5678
+      - DEBUG_WAIT=false  # Don't wait by default for hot reload
+      - LOG_LEVEL=DEBUG
+      - PYTHONPATH=/app
+      - PYTHONDONTWRITEBYTECODE=1  # Don't create .pyc files
+      - PYTHONUNBUFFERED=1  # Real-time output
+    volumes:
+      # Mount source code for live editing with detailed options
+      - ./backend:/app:cached
+      - ./backend/app:/app/app:cached
+      # Mount tokens directory
+      - ./backend/app/tokens:/app/tokens:rw
+      # Exclude these from mounting to avoid conflicts
+      - /app/__pycache__
+      - /app/.pytest_cache
+    ports:
+      - "8000:8000"
+      - "5678:5678"  # Debug port
+    # Override command to ensure debug mode with reload
+    command: ["python", "start_debug.py"]
+    # Don't use cached layers for development
+    build:
+      context: ./backend
+      target: development

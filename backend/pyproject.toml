@@ -3,15 +3,16 @@ name = "backend"
 version = "0.1.0"
 description = ""
 authors = ["Your Name <you@example.com>"]
+package-mode = false  # Add this line to disable package mode
 
 [tool.poetry.dependencies]
-python = ">=3.9,<3.9.7 || >3.9.7,<4.0"
-fastapi = "^0.65.2"
-uvicorn = "^0.14.0"
-pydantic = "^1.8.2"
+python = "^3.10"
+fastapi = "^0.100.0"
+uvicorn = "^0.23.2"
+pydantic = "^2.4.2"
 sqlalchemy = "^1.4.22"
 psycopg2-binary = "^2.9.9"
-redis = "^3.5.3"
+redis = "^5.0.0"
 pymysql = "^1.0.2"
 logzero = "^1.7.0"
 pandas = "^2.2.2"
@@ -25,6 +26,13 @@ ratelimit = "^2.2.1"
 ptvsd = "^4.3.2"
 watchdog = "^4.0.1"
 streamlit = "^1.37.1"
+debugpy = "^1.8.5"
+asyncio = "^3.4.3"
+strawberry-graphql = {extras = ["fastapi"], version = "^0.266.0"}
+aioredis = "^2.0.1"
+jinja2 = "^3.1.6"
+numpy = "^1.24.0"
+pyspark = "^4.0.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
